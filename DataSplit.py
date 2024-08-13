@@ -1,33 +1,88 @@
-from path import Path
-import glob
+import mimetypes
+import random
+from pathlib import Path
+from typing import Union
+
 # import torch
 import torch.nn as nn
+
 # import pandas as pd
 # import numpy as np
 from PIL import Image
-from torchvision.transforms import ToTensor, Compose, Resize, Normalize, RandomCrop
-import random
+from torchvision.transforms import Compose, Normalize, RandomCrop, Resize, ToTensor
+
+from Config import Config
 
 Image.MAX_IMAGE_PIXELS = 1000000000
 
+
+def collect_images(path: Union[str, Path]) -> list[Path]:
+    mime_checker = mimetypes.MimeTypes()
+
+    def validate_file_type(path: Path):
+        mime_type = mime_checker.guess_type(path)[0]
+        return mime_type is not None and mime_type.startswith("image")
+
+    path = Path(path)
+    if path.is_dir():
+        return sorted(filter(validate_file_type, path.rglob("*.*")))
+    else:
+        return [path]
+
+
+def collect_images_from_images(
+    images: list[Union[str, Path]],
+    root_path: Union[str, Path],
+    target_path: Union[str, Path],
+) -> list[Path]:
+    target_path = Path(target_path)
+    if target_path.is_file():
+        return [target_path]
+
+    paths = []
+    exts = [
+        ext
+        for ext, mime_type in mimetypes.types_map.items()
+        if mime_type.startswith("image")
+    ]
+    exts += [ext.upper() for ext in exts]
+    for image in images:
+        image = Path(image)
+        rel_path = image.relative_to(root_path)
+
+        for ext in exts:
+            path = target_path / rel_path.with_suffix(ext)
+            if path.exists():
+                break
+        else:
+            assert False, "The corresponding background image is not found."
+
+        paths.append(path)
+    return paths
+
+
 class DataSplit(nn.Module):
-    def __init__(self, config, phase='train'):
+    def __init__(self, config: Config, phase="train"):
         super(DataSplit, self).__init__()
 
-        self.transform = Compose([Resize(size=[config.load_size, config.load_size]),
-                                RandomCrop(size=(config.crop_size, config.crop_size)),
-                                ToTensor(),
-                                Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
+        self.transform = Compose(
+            [
+                Resize(size=[config.load_size, config.load_size]),
+                RandomCrop(size=(config.crop_size, config.crop_size)),
+                ToTensor(),
+                Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+            ]
+        )
 
-        if phase == 'train':
+        if phase == "train":
             # Content image data
-            img_dir = Path(config.content_dir+'/train')
+            img_dir = Path(config.content_dir + "/train")
             self.images = self.get_data(img_dir)
             if config.data_num < len(self.images):
                 self.images = random.sample(self.images, config.data_num)
 
             # Style image data
-            sty_dir = Path(config.style_dir+'/train')
+            sty_dir = Path(config.style_dir + "/train")
             self.style_images = self.get_data(sty_dir)
             if len(self.images) < len(self.style_images):
                 self.style_images = random.sample(self.style_images, len(self.images))
@@ -37,22 +92,26 @@ class DataSplit(nn.Module):
                 self.style_images = self.style_images * ratio
                 self.style_images += random.sample(self.style_images, bias)
             assert len(self.images) == len(self.style_images)
-            
-        elif phase == 'test':
+
+        elif phase == "test":
             img_dir = Path(config.content_dir)
-            self.images = self.get_data(img_dir)[:config.data_num]
-            
+            # self.images = self.get_data(img_dir)[: config.data_num]
+            self.images = collect_images(img_dir)[: config.data_num]
+
             sty_dir = Path(config.style_dir)
-            self.style_images = self.get_data(sty_dir)[:config.data_num]
-        
-        print('content dir:', img_dir)
-        print('style dir:', sty_dir)
-            
+            # self.style_images = self.get_data(sty_dir)[: config.data_num]
+            self.style_images = collect_images_from_images(
+                self.images, img_dir, sty_dir
+            )
+
+        print("content dir:", img_dir)
+        print("style dir:", sty_dir)
+
     def __len__(self):
         return len(self.images)
-    
+
     def get_data(self, img_dir):
-        file_type = ['*.jpg', '*.png', '*.jpeg', '*.tif']
+        file_type = ["*.jpg", "*.png", "*.jpeg", "*.tif"]
         imgs = []
         for ft in file_type:
             imgs += sorted(img_dir.glob(ft))
@@ -61,11 +120,11 @@ class DataSplit(nn.Module):
 
     def __getitem__(self, index):
         cont_img = self.images[index]
-        cont_img = Image.open(cont_img).convert('RGB')
+        cont_img = Image.open(cont_img).convert("RGB")
         cont_img = self.transform(cont_img)
 
         sty_img = self.style_images[index]
-        sty_img = Image.open(sty_img).convert('RGB')
+        sty_img = Image.open(sty_img).convert("RGB")
         sty_img = self.transform(sty_img)
 
-        return {'content_img': cont_img, 'style_img': sty_img}
+        return {"content_img": cont_img, "style_img": sty_img}
